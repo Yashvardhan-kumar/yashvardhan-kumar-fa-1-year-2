@@ -1,8 +1,8 @@
 streamlit
 torch
 opencv-python-headless
-Pillow
-tqdm
-seaborn
+pillow
 pandas
-ultralytics
+numpy
+PyYAML
+matplotlib
