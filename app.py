@@ -1,13 +1,13 @@
 import streamlit as st
-from ultralytics import YOLO
+import torch
 import cv2
 import numpy as np
 from PIL import Image
 
-# Load YOLOv5 model
+# Load YOLOv5 model from local repo
 @st.cache_resource
 def load_model():
-    return YOLO("best.pt")  # Make sure best.pt is in the root directory
+    return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', source='local')
 
 model = load_model()
 
@@ -26,7 +26,7 @@ compliance_map = {
 }
 
 # Title
-st.title("🦺 Construction PPE Compliance Detector")
+st.title("🦺 PPE Compliance Detector (YOLOv5)")
 
 # Upload image
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
@@ -36,19 +36,17 @@ if uploaded_file:
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
     # Run inference
-    results = model.predict(np.array(image), verbose=False)
-    boxes = results[0].boxes
-    names = model.names
+    results = model(np.array(image))
+    detections = results.pandas().xyxy[0]
 
     # Annotate image
     annotated_img = np.array(image).copy()
     summary = {}
 
-    for box in boxes:
-        cls_id = int(box.cls[0])
-        label = names[cls_id]
+    for _, row in detections.iterrows():
+        label = row['name']
         compliance_status = compliance_map.get(label, label)
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        x1, y1, x2, y2 = int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])
         color = (0, 255, 0) if 'Missing' not in compliance_status else (255, 0, 0)
         cv2.rectangle(annotated_img, (x1, y1), (x2, y2), color, 2)
         cv2.putText(annotated_img, compliance_status, (x1, y1 - 10),
