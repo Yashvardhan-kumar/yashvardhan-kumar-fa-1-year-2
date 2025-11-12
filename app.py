@@ -1,61 +1,62 @@
-# app.py — PPE Detection – 100% offline, no yolov5 folder
+# app.py – PPE Detection – ONLY best.pt + this file
 import os
 import time
 from pathlib import Path
 
 import streamlit as st
 import torch
+import torch.nn as nn
 from PIL import Image, ImageDraw, ImageFont
 import pandas as pd
 import numpy as np
 
-# -------------------------------------------------
-# Paths
-# -------------------------------------------------
+# ------------------------------------------------------------------
+# 1. Patch the missing YOLOv5 class (required for torch.load)
+# ------------------------------------------------------------------
+class DetectionModel(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.nc = kwargs.get("nc", 80)
+        self.names = kwargs.get("names", [str(i) for i in range(self.nc)])
+
+    def forward(self, x, *args, **kwargs):
+        return x
+
+# Register it so torch.load can find it
+import sys
+sys.modules["models.yolo"] = type("module", (), {})
+sys.modules["models.yolo"].DetectionModel = DetectionModel
+
+# ------------------------------------------------------------------
+# 2. Paths
+# ------------------------------------------------------------------
 ROOT = Path(__file__).parent
-WEIGHTS = ROOT / "best.pt"          # <-- your trained model
+WEIGHTS = ROOT / "best.pt"
 
 st.set_page_config(page_title="PPE Detector", layout="centered")
 st.title("PPE Detection")
-st.write("Upload an image → detect helmets, vests, masks, violations.")
+st.write("Upload an image → detect **helmets, vests, masks**, and safety violations.")
 
-# -------------------------------------------------
-# Load model (weights_only=False → safe because you trained it)
-# -------------------------------------------------
+# ------------------------------------------------------------------
+# 3. Load model (weights_only=False – safe because you trained it)
+# ------------------------------------------------------------------
 @st.cache_resource
 def load_model():
     if not WEIGHTS.exists():
-        st.error("`best.pt` not found! Place it next to `app.py`.")
+        st.error("`best.pt` not found! Upload it to the repo root.")
         st.stop()
 
     try:
-        # ---- PyTorch ≥2.6 safe-globals (optional) ----
-        # If you get "Unsupported global" errors, uncomment the next 3 lines:
-        # from torch.serialization import add_safe_globals
-        # from models.yolo import DetectionModel   # not needed – we bypass it
-        # add_safe_globals([DetectionModel])
-
-        ckpt = torch.load(
-            WEIGHTS,
-            map_location="cpu",
-            weights_only=False          # <-- required for YOLOv5 .pt files
-        )
+        ckpt = torch.load(WEIGHTS, map_location="cpu", weights_only=False)
     except Exception as e:
         st.error("Failed to load `best.pt`.")
         st.exception(e)
-        st.info(
-            "Checklist:\n"
-            "1. `best.pt` is in the **same folder** as `app.py`\n"
-            "2. It was **exported from YOLOv5** (`best.pt`, not ONNX)\n"
-            "3. You trained it yourself → `weights_only=False` is safe"
-        )
         st.stop()
 
-    # Extract model + class names
     model = ckpt.get("model") or ckpt.get("ema") or ckpt
     names = ckpt.get("names") or getattr(model, "names", None)
     if names is None:
-        st.error("Class names not found in `best.pt`.")
+        st.error("Class names missing in `best.pt`.")
         st.stop()
 
     model.eval()
@@ -64,59 +65,51 @@ def load_model():
 
 MODEL, CLASS_NAMES = load_model()
 
-# -------------------------------------------------
-# Preprocess
-# -------------------------------------------------
-def preprocess(img_pil: Image.Image):
-    # Resize + pad to 640×640 (YOLOv5 default)
-    old_size = img_pil.size
-    ratio = 640 / max(old_size)
-    new_size = tuple(int(x * ratio) for x in old_size)
-    img = img_pil.resize(new_size, Image.BILINEAR)
+# ------------------------------------------------------------------
+# 4. Preprocess (YOLOv5 style)
+# ------------------------------------------------------------------
+def preprocess(img_pil):
+    w, h = img_pil.size
+    r = 640 / max(w, h)
+    nw, nh = int(w * r), int(h * r)
+    img = img_pil.resize((nw, nh), Image.BILINEAR)
 
-    # Pad to square
-    delta_w = 640 - new_size[0]
-    delta_h = 640 - new_size[1]
-    padding = (delta_w // 2, delta_h // 2, delta_w - delta_w // 2, delta_h - delta_h // 2)
-    img = Image.fromarray(np.pad(np.array(img), (
-        (padding[1], padding[3]), (padding[0], padding[2]), (0, 0)
-    ), mode='constant'))
+    pad_w = 640 - nw
+    pad_h = 640 - nh
+    pad_l = pad_w // 2
+    pad_t = pad_h // 2
 
-    # To tensor
-    img = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
-    img = img.unsqueeze(0)  # 1×C×H×W
-    return img, old_size, ratio, padding
+    img = np.array(img)
+    img = np.pad(img, ((pad_t, pad_h - pad_t), (pad_l, pad_w - pad_l), (0, 0)), mode='constant')
+    img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+    img = img.unsqueeze(0)
+    return img, (w, h), r, (pad_l, pad_t)
 
-# -------------------------------------------------
-# Post-process + draw
-# -------------------------------------------------
+# ------------------------------------------------------------------
+# 5. Post-process + draw
+# ------------------------------------------------------------------
 def postprocess(pred, img_pil, old_size, ratio, padding):
-    pred = pred[0]  # remove batch dim
-    pred = pred[pred[:, 4] > 0.25]  # conf filter
+    pred = pred[0]
+    pred = pred[pred[:, 4] > 0.25]
     if len(pred) == 0:
         return img_pil, pd.DataFrame()
 
-    # Scale boxes back
-    pad_l, pad_t = padding[0], padding[1]
+    pad_l, pad_t = padding
     boxes = pred[:, :4].cpu().numpy()
     boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_l) / ratio
     boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_t) / ratio
 
-    # Clip
     w, h = old_size
     boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, w)
     boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, h)
 
-    # DataFrame
     df = pd.DataFrame({
         "xmin": boxes[:, 0], "ymin": boxes[:, 1],
         "xmax": boxes[:, 2], "ymax": boxes[:, 3],
         "confidence": pred[:, 4].cpu().numpy(),
-        "class": pred[:, 5].cpu().numpy().astype(int),
         "name": [CLASS_NAMES[int(c)] for c in pred[:, 5]]
     })
 
-    # Draw
     draw = ImageDraw.Draw(img_pil)
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
@@ -130,18 +123,18 @@ def postprocess(pred, img_pil, old_size, ratio, padding):
 
     return img_pil, df
 
-# -------------------------------------------------
-# Inference
-# -------------------------------------------------
-def detect(img_pil: Image.Image):
+# ------------------------------------------------------------------
+# 6. Inference
+# ------------------------------------------------------------------
+def detect(img_pil):
     img_tensor, old_size, ratio, padding = preprocess(img_pil)
     with torch.no_grad():
-        pred = MODEL(img_tensor)  # list of tensors → take first
+        pred = MODEL(img_tensor)
     return postprocess(pred, img_pil.copy(), old_size, ratio, padding)
 
-# -------------------------------------------------
-# UI
-# -------------------------------------------------
+# ------------------------------------------------------------------
+# 7. UI
+# ------------------------------------------------------------------
 uploaded = st.file_uploader("Upload image", type=["jpg", "jpeg", "png"])
 
 if uploaded:
@@ -151,7 +144,7 @@ if uploaded:
 
     st.image(img, caption="Original", use_container_width=True)
 
-    with st.spinner("Detecting PPE…"):
+CHD    with st.spinner("Detecting..."):
         ann_img, df = detect(img)
 
     st.image(ann_img, caption="Detections", use_container_width=True)
@@ -160,14 +153,11 @@ if uploaded:
     if df.empty:
         st.warning("No objects detected.")
     else:
-        st.subheader("Detection Details")
-        color_map = {
+        st.subheader("Detections")
+        colors = {
             "Hardhat": "green", "Mask": "green", "Safety Vest": "green",
             "NO-Hardhat": "red", "NO-Mask": "red", "NO-Safety Vest": "red",
         }
         for _, r in df.iterrows():
-            c = color_map.get(r["name"], "gray")
-            st.markdown(
-                f"<span style='color:{c};'><b>{r['name']}</b>: {r['confidence']:.2f}</span>",
-                unsafe_allow_html=True
-            )
+            c = colors.get(r["name"], "gray")
+            st.markdown(f"<span style='color:{c};'><b>{r['name']}</b>: {r['confidence']:.2f}</span>", True)
