@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 
 # ------------------------------------------------------------------
-# 1. Patch the missing YOLOv5 class (required for torch.load)
+# 1. Dummy DetectionModel (required for unpickling YOLOv5 .pt)
 # ------------------------------------------------------------------
 class DetectionModel(nn.Module):
     def __init__(self, *args, **kwargs):
@@ -22,10 +22,8 @@ class DetectionModel(nn.Module):
     def forward(self, x, *args, **kwargs):
         return x
 
-# Register it so torch.load can find it
-import sys
-sys.modules["models.yolo"] = type("module", (), {})
-sys.modules["models.yolo"].DetectionModel = DetectionModel
+# Register the class **before** torch.load is called
+torch.serialization.add_safe_globals([DetectionModel])
 
 # ------------------------------------------------------------------
 # 2. Paths
@@ -38,7 +36,7 @@ st.title("PPE Detection")
 st.write("Upload an image to detect **helmets, vests, masks**, and safety violations.")
 
 # ------------------------------------------------------------------
-# 3. Load model (weights_only=False – safe because you trained it)
+# 3. Load model (weights_only=False – you trained it, so it’s safe)
 # ------------------------------------------------------------------
 @st.cache_resource
 def load_model():
@@ -47,10 +45,20 @@ def load_model():
         st.stop()
 
     try:
-        ckpt = torch.load(WEIGHTS, map_location="cpu", weights_only=False)
+        ckpt = torch.load(
+            WEIGHTS,
+            map_location="cpu",
+            weights_only=False          # required for YOLOv5 .pt files
+        )
     except Exception as e:
         st.error("Failed to load `best.pt`.")
         st.exception(e)
+        st.info(
+            "Checklist:\n"
+            "1. `best.pt` is in the **same folder** as `app.py`\n"
+            "2. It was exported from **YOLOv5** (not ONNX)\n"
+            "3. You trained it → `weights_only=False` is safe"
+        )
         st.stop()
 
     model = ckpt.get("model") or ckpt.get("ema") or ckpt
@@ -66,7 +74,7 @@ def load_model():
 MODEL, CLASS_NAMES = load_model()
 
 # ------------------------------------------------------------------
-# 4. Preprocess (YOLOv5 style)
+# 4. Preprocess (YOLOv5 style – 640×640)
 # ------------------------------------------------------------------
 def preprocess(img_pil):
     w, h = img_pil.size
@@ -86,11 +94,11 @@ def preprocess(img_pil):
     return img, (w, h), r, (pad_l, pad_t)
 
 # ------------------------------------------------------------------
-# 5. Post-process + draw
+# 5. Post‑process + draw boxes
 # ------------------------------------------------------------------
 def postprocess(pred, img_pil, old_size, ratio, padding):
-    pred = pred[0]
-    pred = pred[pred[:, 4] > 0.25]
+    pred = pred[0]                     # remove batch dim
+    pred = pred[pred[:, 4] > 0.25]     # confidence threshold
     if len(pred) == 0:
         return img_pil, pd.DataFrame()
 
@@ -113,7 +121,7 @@ def postprocess(pred, img_pil, old_size, ratio, padding):
     draw = ImageDraw.Draw(img_pil)
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
-    except:
+    except Exception:
         font = ImageFont.load_default()
 
     for _, r in df.iterrows():
@@ -160,4 +168,7 @@ if uploaded:
         }
         for _, r in df.iterrows():
             c = colors.get(r["name"], "gray")
-            st.markdown(f"<span style='color:{c};'><b>{r['name']}</b>: {r['confidence']:.2f}</span>", True)
+            st.markdown(
+                f"<span style='color:{c};'><b>{r['name']}</b>: {r['confidence']:.2f}</span>",
+                unsafe_allow_html=True
+            )
