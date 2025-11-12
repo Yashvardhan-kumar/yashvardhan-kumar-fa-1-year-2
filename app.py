@@ -1,12 +1,12 @@
 import streamlit as st
 import torch
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
-# Load YOLOv5 model
+# Load YOLOv5 model from GitHub
 @st.cache_resource
 def load_model():
-    return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', source='local')
+    return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', source='github')
 
 model = load_model()
 
@@ -25,7 +25,7 @@ compliance_map = {
 }
 
 # Title
-st.title("🦺 PPE Compliance Detector (No OpenCV)")
+st.title("🦺 PPE Compliance Detector")
 
 # Upload image
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
