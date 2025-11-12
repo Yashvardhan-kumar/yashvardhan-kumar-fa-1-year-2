@@ -1,174 +1,221 @@
-# app.py – PPE Detection – ONLY best.pt + this file
-import os
-import time
-from pathlib import Path
-
 import streamlit as st
+from PIL import Image
 import torch
-import torch.nn as nn
-from PIL import Image, ImageDraw, ImageFont
-import pandas as pd
+import cv2
 import numpy as np
 
-# ------------------------------------------------------------------
-# 1. Dummy DetectionModel (required for unpickling YOLOv5 .pt)
-# ------------------------------------------------------------------
-class DetectionModel(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.nc = kwargs.get("nc", 80)
-        self.names = kwargs.get("names", [str(i) for i in range(self.nc)])
+# ============================
+# Page Config & DARK THEME CSS
+# ============================
+st.set_page_config(
+    page_title="PPE Compliance Detector",
+    page_icon="Hard hat",
+    layout="centered",
+    initial_sidebar_state="expanded"
+)
 
-    def forward(self, x, *args, **kwargs):
-        return x
+st.markdown("""
+<style>
+    /* Dark Theme Base */
+    .stApp {
+        background: #0e1117;
+        color: #e2e8f0;
+    }
+    .main {
+        padding: 2rem;
+    }
+    
+    /* Headers */
+    .header-title {
+        font-size: 3rem !important;
+        font-weight: 700;
+        background: linear-gradient(90deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-align: center;
+        margin-bottom: 0.5rem;
+    }
+    .header-subtitle {
+        text-align: center;
+        color: #94a3b8;
+        font-size: 1.2rem;
+        margin-bottom: 2rem;
+    }
 
-# Register the class **before** torch.load is called
-torch.serialization.add_safe_globals([DetectionModel])
+    /* Upload Box - Dark */
+    .upload-box {
+        border: 3px dashed #3b82f6;
+        border-radius: 15px;
+        padding: 2.5rem;
+        text-align: center;
+        background-color: #1e293b;
+        transition: all 0.3s ease;
+    }
+    .upload-box:hover {
+        border-color: #60a5fa;
+        background-color: #334155;
+        transform: translateY(-2px);
+    }
 
-# ------------------------------------------------------------------
-# 2. Paths
-# ------------------------------------------------------------------
-ROOT = Path(__file__).parent
-WEIGHTS = ROOT / "best.pt"
+    /* Cards */
+    .summary-card {
+        background: #1e293b;
+        padding: 1.8rem;
+        border-radius: 14px;
+        border: 1px solid #334155;
+        box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+        margin: 1.5rem 0;
+    }
 
-st.set_page_config(page_title="PPE Detector", layout="centered")
-st.title("PPE Detection")
-st.write("Upload an image to detect **helmets, vests, masks**, and safety violations.")
+    /* Text Colors */
+    .compliant { color: #34d399; font-weight: bold; }
+    .non-compliant { color: #f87171; font-weight: bold; }
+    .neutral { color: #a78bfa; font-weight: bold; }
 
-# ------------------------------------------------------------------
-# 3. Load model (weights_only=False – you trained it, so it’s safe)
-# ------------------------------------------------------------------
+    /* Metrics */
+    .stMetric > div {
+        background: #1e293b;
+        border-radius: 12px;
+        padding: 1rem;
+        border: 1px solid #334155;
+    }
+
+    /* Footer */
+    .footer {
+        text-align: center;
+        margin-top: 4rem;
+        color: #64748b;
+        font-size: 0.9rem;
+    }
+
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+# ============================
+# Load Model
+# ============================
 @st.cache_resource
 def load_model():
-    if not WEIGHTS.exists():
-        st.error("`best.pt` not found! Upload it to the repo root.")
-        st.stop()
+    return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=False)
 
-    try:
-        ckpt = torch.load(
-            WEIGHTS,
-            map_location="cpu",
-            weights_only=False          # required for YOLOv5 .pt files
-        )
-    except Exception as e:
-        st.error("Failed to load `best.pt`.")
-        st.exception(e)
-        st.info(
-            "Checklist:\n"
-            "1. `best.pt` is in the **same folder** as `app.py`\n"
-            "2. It was exported from **YOLOv5** (not ONNX)\n"
-            "3. You trained it → `weights_only=False` is safe"
-        )
-        st.stop()
+model = load_model()
 
-    model = ckpt.get("model") or ckpt.get("ema") or ckpt
-    names = ckpt.get("names") or getattr(model, "names", None)
-    if names is None:
-        st.error("Class names missing in `best.pt`.")
-        st.stop()
+# ============================
+# Compliance Map
+# ============================
+compliance_map = {
+    'Hardhat': 'Hardhat Worn',
+    'Safety Vest': 'Safety Vest Worn',
+    'Mask': 'Mask Worn',
+    'NO-Hardhat': 'Missing Hardhat',
+    'NO-Safety Vest': 'Missing Safety Vest',
+    'NO-Mask': 'Missing Mask',
+    'Person': 'Worker Detected',
+    'machinery': 'Machinery',
+    'vehicle': 'Vehicle',
+    'Safety Cone': 'Safety Cone'
+}
 
-    model.eval()
-    st.success("Model loaded from `best.pt`")
-    return model, names
+# ============================
+# Header
+# ============================
+st.markdown('<h1 class="header-title">Hard hat PPE Compliance Detector</h1>', unsafe_allow_html=True)
+st.markdown('<p class="header-subtitle">Real-time PPE detection for construction site safety monitoring</p>', unsafe_allow_html=True)
 
-MODEL, CLASS_NAMES = load_model()
+# ============================
+# Upload Area
+# ============================
+st.markdown("""
+<div class="upload-box">
+    <h3 style="color:#60a5fa;">Upload Site Image</h3>
+    <p style="color:#94a3b8;">JPG • JPEG • PNG</p>
+</div>
+""", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------
-# 4. Preprocess (YOLOv5 style – 640×640)
-# ------------------------------------------------------------------
-def preprocess(img_pil):
-    w, h = img_pil.size
-    r = 640 / max(w, h)
-    nw, nh = int(w * r), int(h * r)
-    img = img_pil.resize((nw, nh), Image.BILINEAR)
+uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
-    pad_w = 640 - nw
-    pad_h = 640 - nh
-    pad_l = pad_w // 2
-    pad_t = pad_h // 2
+if uploaded_file:
+    image = Image.open(uploaded_file).convert("RGB")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.image(image, caption="Original Image", use_column_width=True)
+    
+    with st.spinner("Analyzing with YOLOv5..."):
+        results = model(image)
+        df = results.pandas().xyxy[0]
+        
+        annotated_img = np.array(image)
+        for _, row in df.iterrows():
+            label = row['name']
+            x1, y1, x2, y2 = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
+            is_compliant = label in ['Hardhat', 'Safety Vest', 'Mask']
+            color = (0, 255, 0) if is_compliant else (255, 0, 0)
+            cv2.rectangle(annotated_img, (x1, y1), (x2, y2), color, 3)
+            text = compliance_map.get(label, label)
+            cv2.putText(annotated_img, text, (x1, y1 - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-    img = np.array(img)
-    img = np.pad(img, ((pad_t, pad_h - pad_t), (pad_l, pad_w - pad_l), (0, 0)), mode='constant')
-    img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
-    img = img.unsqueeze(0)
-    return img, (w, h), r, (pad_l, pad_t)
+    with col2:
+        st.markdown("### Detection Result")
+        st.image(annotated_img, use_column_width=True)
 
-# ------------------------------------------------------------------
-# 5. Post‑process + draw boxes
-# ------------------------------------------------------------------
-def postprocess(pred, img_pil, old_size, ratio, padding):
-    pred = pred[0]                     # remove batch dim
-    pred = pred[pred[:, 4] > 0.25]     # confidence threshold
-    if len(pred) == 0:
-        return img_pil, pd.DataFrame()
+    # ============================
+    # Summary Card
+    # ============================
+    st.markdown("### Compliance Summary")
+    st.markdown("<div class='summary-card'>", unsafe_allow_html=True)
 
-    pad_l, pad_t = padding
-    boxes = pred[:, :4].cpu().numpy()
-    boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_l) / ratio
-    boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_t) / ratio
+    compliant_count = 0
+    violations = 0
+    workers = len(df[df['name'] == 'Person'])
 
-    w, h = old_size
-    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, w)
-    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, h)
+    for label in df['name'].unique():
+        count = (df['name'] == label).sum()
+        text = compliance_map.get(label, label)
+        if any(x in text for x in ['Hardhat Worn', 'Vest Worn', 'Mask Worn']):
+            st.markdown(f"<p class='compliant'>Hardhat {text}: <strong>{count}</strong></p>", unsafe_allow_html=True)
+            compliant_count += count
+        elif 'Missing' in text:
+            st.markdown(f"<p class='non-compliant'>Warning {text}: <strong>{count}</strong></p>", unsafe_allow_html=True)
+            violations += count
+        else:
+            st.markdown(f"<p class='neutral'>{text}: <strong>{count}</strong></p>", unsafe_allow_html=True)
 
-    df = pd.DataFrame({
-        "xmin": boxes[:, 0], "ymin": boxes[:, 1],
-        "xmax": boxes[:, 2], "ymax": boxes[:, 3],
-        "confidence": pred[:, 4].cpu().numpy(),
-        "name": [CLASS_NAMES[int(c)] for c in pred[:, 5]]
-    })
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    draw = ImageDraw.Draw(img_pil)
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
-    except Exception:
-        font = ImageFont.load_default()
+    # ============================
+    # Metrics
+    # ============================
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Total Workers", workers)
+    with c2:
+        st.metric("Compliant Items", compliant_count)
+    with c3:
+        st.metric("Violations", violations, delta=violations)
 
-    for _, r in df.iterrows():
-        draw.rectangle([r.xmin, r.ymin, r.xmax, r.ymax], outline="red", width=3)
-        label = f"{r.name} {r.confidence:.2f}"
-        draw.text((r.xmin, r.ymin - 25), label, fill="red", font=font)
+    # ============================
+    # Final Status
+    # ============================
+    if violations == 0 and workers > 0:
+        st.success("**All workers are fully compliant!** Excellent safety standards.")
+    elif violations > 0:
+        st.error(f"**{violations} PPE violation(s) detected!** Take immediate action.")
 
-    return img_pil, df
+else:
+    st.info("Upload an image to start PPE compliance checking.")
 
-# ------------------------------------------------------------------
-# 6. Inference
-# ------------------------------------------------------------------
-def detect(img_pil):
-    img_tensor, old_size, ratio, padding = preprocess(img_pil)
-    with torch.no_grad():
-        pred = MODEL(img_tensor)
-    return postprocess(pred, img_pil.copy(), old_size, ratio, padding)
-
-# ------------------------------------------------------------------
-# 7. UI
-# ------------------------------------------------------------------
-uploaded = st.file_uploader("Upload image", type=["jpg", "jpeg", "png"])
-
-if uploaded:
-    tmp_path = ROOT / f"tmp_{int(time.time())}.jpg"
-    img = Image.open(uploaded).convert("RGB")
-    img.save(tmp_path)
-
-    st.image(img, caption="Original", use_container_width=True)
-
-    with st.spinner("Detecting..."):
-        ann_img, df = detect(img)
-
-    st.image(ann_img, caption="Detections", use_container_width=True)
-    tmp_path.unlink(missing_ok=True)
-
-    if df.empty:
-        st.warning("No objects detected.")
-    else:
-        st.subheader("Detections")
-        colors = {
-            "Hardhat": "green", "Mask": "green", "Safety Vest": "green",
-            "NO-Hardhat": "red", "NO-Mask": "red", "NO-Safety Vest": "red",
-        }
-        for _, r in df.iterrows():
-            c = colors.get(r["name"], "gray")
-            st.markdown(
-                f"<span style='color:{c};'><b>{r['name']}</b>: {r['confidence']:.2f}</span>",
-                unsafe_allow_html=True
-            )
+# ============================
+# Footer
+# ============================
+st.markdown("""
+<div class="footer">
+    <p>Hard hat PPE Compliance Detector • YOLOv5 + Streamlit</p>
+    <p>Keeping construction sites safe, 24/7</p>
+</div>
+""", unsafe_allow_html=True)
