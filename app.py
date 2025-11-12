@@ -1,162 +1,142 @@
-# app.py — PPE Detection using torch.hub (no local yolov5 folder required)
+# app.py — 100% YOLOv5-FREE, runs your best.pt directly
 import os
 import time
 from pathlib import Path
+
 import streamlit as st
+import torch
 from PIL import Image
 import pandas as pd
-import torch
+import numpy as np
 
-REPO_ROOT = Path(__file__).parent
-WEIGHTS = REPO_ROOT / "best.pt"  # ensure best.pt is in repo root
+# -------------------------------
+# Paths
+# -------------------------------
+ROOT = Path(__file__).parent
+WEIGHTS = ROOT / "best.pt"  # <-- YOUR MODEL HERE
 
-st.set_page_config(page_title="PPE Detection App", layout="centered")
-st.title("PPE Detection App")
-st.write("Upload an image to detect helmets, vests, masks, and other PPE items.")
+st.set_page_config(page_title="PPE Detector", layout="centered")
+st.title("PPE Detection")
+st.write("Upload an image → detect **helmets, vests, masks**, and violations.")
 
-# -------------------------
-# Load model via torch.hub (with skip_validation to avoid rate limits)
-# -------------------------
+# -------------------------------
+# Load model directly (NO yolov5 folder!)
+# -------------------------------
 @st.cache_resource
-def load_model_hub():
+def load_model():
     if not WEIGHTS.exists():
-        st.error(f"Model weights not found: '{WEIGHTS.name}'. Upload `best.pt` to repo root.")
+        st.error("`best.pt` not found! Upload your trained model.")
         st.stop()
 
     try:
-        model = torch.hub.load(
-            "ultralytics/yolov5",
-            "custom",
-            path=str(WEIGHTS),
-            force_reload=False,
-            trust_repo=True,
-            skip_validation=True  # Critical: avoids GitHub API rate limit
-        )
+        # Load the raw .pt file (contains 'model' and 'names')
+        ckpt = torch.load(WEIGHTS, map_location="cpu")
+        model = ckpt["model"]
         model.eval()
-        return {"backend": "hub", "model": model}
+        names = ckpt.get("names", ckpt.get("model").names)  # class names
+        st.success("Model loaded from `best.pt`")
+        return model, names
     except Exception as e:
-        st.error("Failed to load YOLOv5 via torch.hub.")
-        st.markdown(
-            "<details><summary>Technical error (click to expand)</summary>"
-            f"<pre>{str(e)}</pre></details>",
-            unsafe_allow_html=True,
-        )
-        st.info(
-            "Quick fixes:\n\n"
-            "• Add `skip_validation=True` (already done), or\n"
-            "• Clone a minimal `yolov5/` folder locally and use `source='local'`, or\n"
-            "• Check if `best.pt` is uploaded correctly."
-        )
-        st.stop()
-
-state = load_model_hub()
-MODEL = state["model"]
-
-# -------------------------
-# Helper: run detection using hub-style API
-# -------------------------
-def run_detection_on_path(img_path, model, conf_thres=0.25):
-    try:
-        results = model(img_path, size=640, augment=False)
-    except Exception as e:
-        raise RuntimeError(f"Model inference failed: {e}") from e
-
-    # Render annotated image
-    try:
-        imgs = results.render()
-        annotated = imgs[0]
-        pil_ann = Image.fromarray(annotated)
-    except Exception:
-        pil_ann = None
-
-    # Detection table
-    try:
-        df = results.pandas().xyxy[0]
-    except Exception:
-        df = pd.DataFrame()
-
-    return pil_ann, df
-
-# -------------------------
-# UI
-# -------------------------
-uploaded = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-
-if not uploaded:
-    st.info("Upload an image to run PPE detection.")
-else:
-    # Save uploaded image temporarily
-    tmp_name = f"tmp_{int(time.time())}.jpg"
-    tmp_path = REPO_ROOT / tmp_name
-    image = Image.open(uploaded).convert("RGB")
-    image.save(tmp_path)
-
-    st.image(image, caption="Uploaded Image", use_container_width=True)
-    st.write("Detecting...")
-
-    try:
-        annotated_img, df = run_detection_on_path(str(tmp_path), MODEL, conf_thres=0.25)
-    except Exception as e:
-        st.error("Inference failed. See details below.")
+        st.error("Failed to load `best.pt`.")
         st.exception(e)
-        tmp_path.unlink(missing_ok=True)
+        st.info(
+            "Make sure:\n"
+            "1. `best.pt` is in the same folder as `app.py`\n"
+            "2. It was exported from YOLOv5 (not ONNX)"
+        )
         st.stop()
 
-    # Display results
-    if annotated_img is not None:
-        st.image(annotated_img, caption="Detection Results", use_container_width=True)
-    else:
-        st.warning("Annotated image not available; showing original.")
-        st.image(image, use_container_width=True)
+MODEL, CLASS_NAMES = load_model()
 
-    # Cleanup
+# -------------------------------
+# Preprocess image
+# -------------------------------
+def preprocess(img_pil):
+    img = img_pil.resize((640, 640))
+    img = np.array(img).transpose(2, 0, 1)  # HWC → CHW
+    img = torch.from_numpy(img).float() / 255.0
+    img = img.unsqueeze(0)  # 1xCxHxW
+    return img
+
+# -------------------------------
+# Run inference
+# -------------------------------
+def detect(img_pil):
+    img = preprocess(img_pil)
+    with torch.no_grad():
+        pred = MODEL(img)[0]  # (1, num_boxes, 85)
+
+    # Apply NMS
+    pred = pred[pred[:, 4] > 0.25]  # conf > 0.25
+    if len(pred) == 0:
+        return None, pd.DataFrame()
+
+    # Scale boxes back to original size
+    h, w = img_pil.height, img_pil.width
+    scale = 640 / max(h, w)
+    pad_h = (640 - h * scale) / 2
+    pad_w = (640 - w * scale) / 2
+
+    boxes = pred[:, :4].cpu().numpy()
+    boxes[:, 0] = (boxes[:, 0] - pad_w) / scale  # x1
+    boxes[:, 1] = (boxes[:, 1] - pad_h) / scale  # y1
+    boxes[:, 2] = (boxes[:, 2] - pad_w) / scale  # x2
+    boxes[:, 3] = (boxes[:, 3] - pad_h) / scale  # y2
+
+    # Clip
+    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, w)
+    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, h)
+
+    # To DataFrame
+    df = pd.DataFrame({
+        "xmin": boxes[:, 0],
+        "ymin": boxes[:, 1],
+        "xmax": boxes[:, 2],
+        "ymax": boxes[:, 3],
+        "confidence": pred[:, 4].cpu().numpy(),
+        "class": pred[:, 5].cpu().numpy().astype(int),
+        "name": [CLASS_NAMES[int(i)] for i in pred[:, 5]]
+    })
+
+    # Draw
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img_pil)
+    for _, row in df.iterrows():
+        draw.rectangle([row.xmin, row.ymin, row.xmax, row.ymax], outline="red", width=3)
+        draw.text((row.xmin, row.ymin - 10), f"{row.name} {row.confidence:.2f}", fill="red")
+
+    return img_pil, df
+
+# -------------------------------
+# UI
+# -------------------------------
+uploaded = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
+
+if uploaded:
+    tmp_path = ROOT / f"tmp_{int(time.time())}.jpg"
+    img = Image.open(uploaded).convert("RGB")
+    img.save(tmp_path)
+
+    st.image(img, caption="Original", use_container_width=True)
+
+    with st.spinner("Detecting..."):
+        ann_img, df = detect(img.copy())
+
+    if ann_img:
+        st.image(ann_img, caption="Detections", use_container_width=True)
+    else:
+        st.image(img, use_container_width=True)
+
     tmp_path.unlink(missing_ok=True)
 
-    # Detection details
     if df.empty:
         st.warning("No objects detected.")
     else:
-        st.subheader("Detection Details")
-        color_map = {
+        st.subheader("Detections")
+        color = {
             "Hardhat": "green", "Mask": "green", "Safety Vest": "green",
             "NO-Hardhat": "red", "NO-Mask": "red", "NO-Safety Vest": "red",
-            "Person": "yellow", "Safety Cone": "yellow",
-            "Machinery": "yellow", "Vehicle": "yellow",
         }
-        sections = {
-            "Safe Equipment": [],
-            "Other Objects": [],
-            "Unsafe Conditions": []
-        }
-
-        if "name" not in df.columns and "class" in df.columns:
-            df = df.rename(columns={"class": "name"})
-
-        for _, row in df.iterrows():
-            label = str(row.get("name", ""))
-            conf = float(row.get("confidence", 0.0))
-            color = color_map.get(label, "white")
-            html_line = f"<span style='color:{color}; font-size:18px;'><b>{label}</b> — {conf:.2f}</span>"
-
-            if label.startswith("NO-"):
-                sections["Unsafe Conditions"].append(html_line)
-            elif label in ["Hardhat", "Mask", "Safety Vest"]:
-                sections["Safe Equipment"].append(html_line)
-            else:
-                sections["Other Objects"].append(html_line)
-
-        for title, items in sections.items():
-            if items:
-                st.markdown(f"### {title}")
-                for line in items:
-                    st.markdown(line, unsafe_allow_html=True)
-
-        st.write("---")
-        st.subheader("Detection Summary")
-        try:
-            counts = df["name"].value_counts()
-            for obj, count in counts.items():
-                color = color_map.get(obj, "white")
-                st.markdown(f"<span style='color:{color};'>• {obj}: {count}</span>", unsafe_allow_html=True)
-        except Exception:
-            pass
+        for _, r in df.iterrows():
+            c = color.get(r["name"], "gray")
+            st.markdown(f"<span style='color:{c};'><b>{r['name']}</b>: {r['confidence']:.2f}</span>", True)
