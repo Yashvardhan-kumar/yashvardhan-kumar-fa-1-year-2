@@ -3,7 +3,7 @@ from ultralytics import YOLO
 import numpy as np
 from PIL import Image, ImageDraw
 
-# Load YOLOv5 model using Ultralytics
+# Load YOLOv5 model
 @st.cache_resource
 def load_model():
     return YOLO("best.pt")
@@ -24,7 +24,7 @@ compliance_map = {
     'Safety Cone': 'Safety Cone'
 }
 
-# UI
+# Streamlit UI
 st.title("🦺 PPE Compliance Detector")
 
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
@@ -33,7 +33,7 @@ if uploaded_file:
     image = Image.open(uploaded_file).convert("RGB")
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    # Run inference
+    # Run YOLOv5 inference
     results = model.predict(np.array(image), verbose=False)
     boxes = results[0].boxes
     names = model.names
@@ -54,7 +54,7 @@ if uploaded_file:
 
     st.image(image, caption="Detection Results", use_column_width=True)
 
-    # Summary
+    # Show detection summary
     st.subheader("Detection Summary")
     for label, count in summary.items():
         st.write(f"- {label}: {count}")
