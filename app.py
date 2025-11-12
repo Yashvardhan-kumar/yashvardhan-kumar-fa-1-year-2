@@ -3,6 +3,8 @@ from PIL import Image
 import torch
 import numpy as np
 import tempfile
+import cv2
+
 
 # Load model
 @st.cache_resource
@@ -57,4 +59,5 @@ if uploaded_file:
         for label in df['name'].unique():
             count = (df['name'] == label).sum()
             st.write(f"{compliance_map.get(label, label)}: {count}")
+
 
