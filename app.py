@@ -1,12 +1,11 @@
 import streamlit as st
-from ultralytics import YOLO
+import torch
 import numpy as np
 from PIL import Image, ImageDraw
 
-# Load YOLOv5 model
 @st.cache_resource
 def load_model():
-    return YOLO("best.pt")
+    return torch.jit.load("best_scripted.pt")
 
 model = load_model()
 
@@ -24,7 +23,6 @@ compliance_map = {
     'Safety Cone': 'Safety Cone'
 }
 
-# Streamlit UI
 st.title("🦺 PPE Compliance Detector")
 
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
@@ -33,20 +31,20 @@ if uploaded_file:
     image = Image.open(uploaded_file).convert("RGB")
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    # Run YOLOv5 inference
-    results = model.predict(np.array(image), verbose=False)
-    boxes = results[0].boxes
-    names = model.names
+    img = np.array(image)
+    img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+    img_tensor = img_tensor.unsqueeze(0)
 
-    # Annotate image using Pillow
+    with torch.no_grad():
+        results = model(img_tensor)[0]  # adapt based on your model's output format
+
     draw = ImageDraw.Draw(image)
     summary = {}
 
-    for box in boxes:
-        cls_id = int(box.cls[0])
-        label = names[cls_id]
+    for det in results:  # adapt this loop to match your model's output
+        x1, y1, x2, y2, cls_id = map(int, det[:5])  # example format
+        label = model.names[int(cls_id)]
         status = compliance_map.get(label, label)
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
         color = "green" if "Missing" not in status else "red"
         draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
         draw.text((x1, y1 - 10), status, fill=color)
@@ -54,7 +52,6 @@ if uploaded_file:
 
     st.image(image, caption="Detection Results", use_column_width=True)
 
-    # Show detection summary
     st.subheader("Detection Summary")
     for label, count in summary.items():
         st.write(f"- {label}: {count}")
