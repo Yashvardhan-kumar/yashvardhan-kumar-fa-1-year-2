@@ -35,7 +35,7 @@ WEIGHTS = ROOT / "best.pt"
 
 st.set_page_config(page_title="PPE Detector", layout="centered")
 st.title("PPE Detection")
-st.write("Upload an image → detect **helmets, vests, masks**, and safety violations.")
+st.write("Upload an image to detect **helmets, vests, masks**, and safety violations.")
 
 # ------------------------------------------------------------------
 # 3. Load model (weights_only=False – safe because you trained it)
@@ -144,7 +144,7 @@ if uploaded:
 
     st.image(img, caption="Original", use_container_width=True)
 
-CHD    with st.spinner("Detecting..."):
+    with st.spinner("Detecting..."):
         ann_img, df = detect(img)
 
     st.image(ann_img, caption="Detections", use_container_width=True)
