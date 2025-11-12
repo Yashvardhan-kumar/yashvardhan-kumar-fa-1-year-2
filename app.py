@@ -1,4 +1,4 @@
-# app.py (safe version) — drop-in replacement
+# app.py (UI refresh only - logic unchanged)
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 import torch
@@ -6,8 +6,110 @@ import numpy as np
 import io
 import os
 
-st.set_page_config(page_title="PPE Compliance Detector", layout="centered")
-st.title("🛠️ PPE Compliance Detection")
+# --- page config + small theme touch ---
+st.set_page_config(page_title="PPE Compliance Detector", layout="centered", initial_sidebar_state="collapsed")
+
+# --- custom CSS to change look & feel (colors, fonts, cards) ---
+CUSTOM_CSS = """
+/* overall background */
+[data-testid="stAppViewContainer"] {
+  background: linear-gradient(180deg, #0f1720 0%, #0b1320 100%);
+  color: #e6eef8;
+  font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+}
+
+/* center content + top padding */
+main > div blockquote + div {
+  padding-top: 18px;
+}
+
+/* header */
+h1 {
+  font-size: 36px !important;
+  color: #f4f9ff !important;
+  letter-spacing: -0.5px;
+}
+
+/* subtitle */
+h2, h3 {
+  color: #dbeafe !important;
+}
+
+/* boxes (error/info) slightly restyled */
+.stAlert {
+  border-radius: 12px !important;
+  padding: 12px 18px !important;
+  font-weight: 600;
+}
+
+/* custom card container */
+.ppe-card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border: 1px solid rgba(255,255,255,0.04);
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 6px 18px rgba(2,6,23,0.6);
+  margin-bottom: 18px;
+}
+
+/* uploader styling */
+.upload-wrap {
+  background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border-radius: 12px;
+  border: 1px dashed rgba(255,255,255,0.06);
+  padding: 14px;
+}
+
+/* button style */
+.stButton > button {
+  background: linear-gradient(90deg, #00c2a8, #2dd4bf);
+  color: #022c2a;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 8px 14px;
+}
+
+/* small muted text */
+.muted {
+  color: rgba(230,238,248,0.6);
+  font-size: 13px;
+}
+
+/* compliance pills */
+.pill {
+  display:inline-block;
+  padding:6px 10px;
+  border-radius:999px;
+  margin:4px 6px 4px 0;
+  font-weight:600;
+}
+.pill.good { background: rgba(34,197,94,0.12); color:#bbf7d0; border:1px solid rgba(34,197,94,0.12);}
+.pill.bad  { background: rgba(239,68,68,0.12); color:#ffd7d7; border:1px solid rgba(239,68,68,0.12);}
+
+/* image captions */
+[data-testid="stImage"] figcaption {
+  color: #cfe8ff !important;
+  font-weight:600;
+}
+
+/* download button tweak */
+.stDownloadButton>button {
+  background: linear-gradient(90deg, #f59e0b, #fb923c);
+  color: #1a1207;
+  border-radius: 9px;
+  font-weight:700;
+}
+"""
+
+st.markdown(f"<style>{CUSTOM_CSS}</style>", unsafe_allow_html=True)
+
+# --- Title area (keeps same text but nicer layout) ---
+col1, col2 = st.columns([0.1, 1])
+with col1:
+    st.markdown("<div style='font-size:36px'>🦺</div>", unsafe_allow_html=True)
+with col2:
+    st.markdown("<h1>PPE Compliance Detection</h1>", unsafe_allow_html=True)
+    st.markdown("<div class='muted'>Upload a photo and the model will mark PPE presence and compliance.</div>", unsafe_allow_html=True)
 
 # small map kept from your original
 compliance_map = {
@@ -51,11 +153,16 @@ model = None
 try:
     model = load_model()
 except Exception as e:
+    # intentionally using the same messages so logic/flow unchanged
     st.error("Model load: " + str(e))
     st.info("You can still upload an image, but detection won't run until model is loaded successfully.")
-    # we do not stop here so you can still view UI
 
-uploaded_file = st.file_uploader("Upload an image (jpg/png)", type=["jpg","jpeg","png"])
+# uploader card (styled)
+st.markdown("<div class='ppe-card'>", unsafe_allow_html=True)
+st.markdown("<h3>Upload an image (jpg/png)</h3>", unsafe_allow_html=True)
+st.markdown("<div class='muted'>Drag & drop an image or use Browse. Max 200MB.</div>", unsafe_allow_html=True)
+uploaded_file = st.file_uploader("", type=["jpg","jpeg","png"], label_visibility="collapsed")
+st.markdown("</div>", unsafe_allow_html=True)
 
 def draw_boxes_pil(img_pil, df):
     draw = ImageDraw.Draw(img_pil)
@@ -122,6 +229,11 @@ if uploaded_file:
         # summary
         st.subheader("Compliance summary")
         counts = df['name'].value_counts()
+        # nicer inline pills for each label (visual only)
+        pill_html = ""
         for label, cnt in counts.items():
-            st.write(f"{compliance_map.get(label, label)}: {cnt}")
-
+            is_ok = not str(label).startswith('NO-')
+            pill_class = "good" if is_ok else "bad"
+            pretty = compliance_map.get(label, label)
+            pill_html += f"<span class='pill {pill_class}'>{pretty} × {cnt}</span>"
+        st.markdown(pill_html, unsafe_allow_html=True)
