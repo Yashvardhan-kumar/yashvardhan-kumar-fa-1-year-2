@@ -1,7 +1,6 @@
 import streamlit as st
 from PIL import Image
 import torch
-import cv2
 import numpy as np
 import tempfile
 
@@ -58,3 +57,4 @@ if uploaded_file:
         for label in df['name'].unique():
             count = (df['name'] == label).sum()
             st.write(f"{compliance_map.get(label, label)}: {count}")
+
