@@ -1,5 +1,6 @@
 streamlit
-torch
+torch>=2.0
 torchvision
-pandas
 Pillow
+pandas
+numpy
