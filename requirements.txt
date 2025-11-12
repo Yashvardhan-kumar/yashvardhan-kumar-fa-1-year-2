@@ -1,6 +1,9 @@
 streamlit
-torch>=2.0
+torch
 torchvision
 Pillow
-pandas
+opencv-python-headless
 numpy
+pandas
+matplotlib
+pyyaml
