@@ -1,10 +1,9 @@
 import streamlit as st
 import torch
-import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
-# Load YOLOv5 model from local repo
+# Load YOLOv5 model
 @st.cache_resource
 def load_model():
     return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', source='local')
@@ -26,7 +25,7 @@ compliance_map = {
 }
 
 # Title
-st.title("🦺 PPE Compliance Detector (YOLOv5)")
+st.title("🦺 PPE Compliance Detector (No OpenCV)")
 
 # Upload image
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
@@ -39,21 +38,20 @@ if uploaded_file:
     results = model(np.array(image))
     detections = results.pandas().xyxy[0]
 
-    # Annotate image
-    annotated_img = np.array(image).copy()
+    # Annotate image using Pillow
+    draw = ImageDraw.Draw(image)
     summary = {}
 
     for _, row in detections.iterrows():
         label = row['name']
         compliance_status = compliance_map.get(label, label)
-        x1, y1, x2, y2 = int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])
-        color = (0, 255, 0) if 'Missing' not in compliance_status else (255, 0, 0)
-        cv2.rectangle(annotated_img, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(annotated_img, compliance_status, (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        x1, y1, x2, y2 = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
+        color = "green" if "Missing" not in compliance_status else "red"
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+        draw.text((x1, y1 - 10), compliance_status, fill=color)
         summary[compliance_status] = summary.get(compliance_status, 0) + 1
 
-    st.image(annotated_img, caption="Detection Results", use_column_width=True)
+    st.image(image, caption="Detection Results", use_column_width=True)
 
     # Show detection summary
     st.subheader("Detection Summary")
